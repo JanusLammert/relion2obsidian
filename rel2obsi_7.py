@@ -29,7 +29,7 @@ def parse_relion_jobs(project_dir):
                 job_type = next((t for t in [
                     "Class2D", "Class3D", "Refine3D", "Extract", "CtfFind",
                     "ManualPick", "MaskCreate", "Micrographs", "Motion_Corr",
-                    "Select", "Import"
+                    "Select", "Import", "PostProcess"
                 ] if t in root), "Unknown")
 
                 # Parse job information (JSON or STAR)
