@@ -129,10 +129,6 @@ python rel2obsi.py -i /path/to/relion/project -o /path/to/obsidian/vault --force
 
 This tool is currently in active development. Version 9 is the latest but has limited testing. User feedback and bug reports are welcome!
 
-## License
-
-[MIT License](LICENSE)
-
 ## Citation
 
 If you use this tool in your research, please cite:
