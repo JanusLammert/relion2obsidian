@@ -129,9 +129,3 @@ python rel2obsi.py -i /path/to/relion/project -o /path/to/obsidian/vault --force
 
 This tool is currently in active development. Version 9 is the latest but has limited testing. User feedback and bug reports are welcome!
 
-## Citation
-
-If you use this tool in your research, please cite:
-```
-RELION2Obsidian: A tool for converting RELION cryo-EM projects to Obsidian knowledge bases
-```
