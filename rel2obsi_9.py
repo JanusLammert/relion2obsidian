@@ -54,7 +54,7 @@ def parse_relion_jobs(project_dir):
                     # Determine job type based on folder name
                     job_type = next((t for t in [
                         "Class2D", "Class3D", "Refine3D", "Extract", "CtfFind",
-                        "ManualPick", "AutoPick", "MaskCreate", "Micrographs", "Motion_Corr",
+                        "ManualPick", "AutoPick", "MaskCreate", "Micrographs", "MotionCorr",
                         "Select", "Import", "PostProcess"
                     ] if t in root), "Unknown")
 
