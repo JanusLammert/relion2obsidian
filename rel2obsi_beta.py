@@ -1337,8 +1337,6 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                     # All settings in a collapsible section
                     if "settings" in job["details"] and job["details"]["settings"]:
                         f.write("## All Settings\n\n")
-                        f.write("<details>\n")
-                        f.write("<summary>Click to expand all settings</summary>\n\n")
                         f.write("| Setting | Value |\n")
                         f.write("|---------|-------|\n")
                         for key, value in job["details"]["settings"].items():
@@ -1347,7 +1345,6 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                             if len(value_str) > 50:
                                 value_str = value_str[:47] + "..."
                             f.write(f"| `{key}` | `{value_str}` |\n")
-                        f.write("\n</details>\n\n")
 
                     # Special sections for specific job types
                     if job['type'] == "Class2D":
