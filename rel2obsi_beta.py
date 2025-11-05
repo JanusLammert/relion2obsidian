@@ -1468,7 +1468,7 @@ def create_index_file(all_jobs, output_dir):
                     input_jobs = job['details'].get('input_jobs', [])
                     input_job_count = len(input_jobs)
                     
-                    f.write(f"| [[{note_filename.replace('.md', '')}|{job['name']}]] | {creation_date} | {input_job_count} |\n")
+                    f.write(f"| {note_filename.replace('.md', '')} | {creation_date} | {input_job_count} |\n")
                 
                 f.write("\n")
             
