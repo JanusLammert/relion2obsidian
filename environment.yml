@@ -1,0 +1,13 @@
+name: rel2obsi
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - matplotlib
+  - mrcfile
+  - starfile
+  - scikit-image
+  - pillow
+  - tqdm
+  - natsort
