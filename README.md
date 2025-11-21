@@ -211,5 +211,5 @@ python rel2obsi.py -i /path/to/relion/project -o /path/to/obsidian/vault --force
 
 ## Development Status
 
-This tool is currently in active development. Version 9 is the latest but has limited testing.  
+This tool is currently in active development. Beta-version is the latest but has limited testing.  
 User feedback and bug reports are welcome!
