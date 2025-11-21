@@ -96,14 +96,6 @@ def parse_relion_jobs(project_dir):
     logger.info("Scanning for job files...")
     job_files = find_job_files(project_dir)
     logger.info(f"Found {len(job_files)} job files to process")
-
-    
-    possible_pipelines = [
-    os.path.join(project_dir, "pipeline.star"),
-    os.path.join(project_dir, "default_pipeline.star")
-]
-
-    pipeline_path = next((p for p in possible_pipelines if os.path.exists(p)), None)
     
     # Process job files
     for job_path in tqdm(job_files, desc="Processing jobs"):
@@ -523,17 +515,24 @@ def generate_refine3d_visualization(job_dir, out_dir, job_name):
         for i, map_file in enumerate(filtered_maps):
             with mrcfile.open(map_file) as mrc:
                 map_arr = mrc.data
+                map_arr = normalize(map_arr)
             
             ax1 = plt.subplot(total_rows, 3, i*3 + 1)
             ax2 = plt.subplot(total_rows, 3, i*3 + 2) 
             ax3 = plt.subplot(total_rows, 3, i*3 + 3)
             
-            ax1.imshow(map_arr[MAP_SHAPE[0] // 2, :, :], cmap='gray')
-            ax2.imshow(map_arr[:, MAP_SHAPE[1] // 2, :], cmap='gray')
-            ax3.imshow(map_arr[:, :, MAP_SHAPE[2] // 2], cmap='gray')
+            mid_z = map_arr.shape[0] // 2
+            mid_y = map_arr.shape[1] // 2
+            mid_x = map_arr.shape[2] // 2
+
+            ax1.imshow(map_arr[mid_z, :, :], cmap='gray')
+            ax2.imshow(map_arr[:, mid_y, :], cmap='gray')
+            ax3.imshow(map_arr[:, :, mid_x], cmap='gray')
+
             ax1.set_title(f"Class {i+1} - Z slice")
             ax2.set_title(f"Class {i+1} - Y slice")
             ax3.set_title(f"Class {i+1} - X slice")
+
             ax1.axis('off')
             ax2.axis('off')
             ax3.axis('off')
@@ -567,7 +566,7 @@ def generate_refine3d_visualization(job_dir, out_dir, job_name):
         output_path = Path(out_dir) / rel_output_path
         
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        fig.savefig(output_path, dpi=300, bbox_inches='tight')
+        fig.savefig(output_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         
         logger.info(f"Created Refine3D visualization: {output_path}")
@@ -660,17 +659,24 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         for i, map_file in enumerate(map_files_one_it):
             with mrcfile.open(map_file) as mrc:
                 map_arr = mrc.data
+                map_arr = normalize(map_arr)
             
             ax1 = plt.subplot(total_rows, 3, i*3 + 1)
             ax2 = plt.subplot(total_rows, 3, i*3 + 2) 
             ax3 = plt.subplot(total_rows, 3, i*3 + 3)
             
-            ax1.imshow(map_arr[MAP_SHAPE[0] // 2, :, :], cmap='gray')
-            ax2.imshow(map_arr[:, MAP_SHAPE[1] // 2, :], cmap='gray')
-            ax3.imshow(map_arr[:, :, MAP_SHAPE[2] // 2], cmap='gray')
+            mid_z = map_arr.shape[0] // 2
+            mid_y = map_arr.shape[1] // 2
+            mid_x = map_arr.shape[2] // 2
+
+            ax1.imshow(map_arr[mid_z, :, :], cmap='gray')
+            ax2.imshow(map_arr[:, mid_y, :], cmap='gray')
+            ax3.imshow(map_arr[:, :, mid_x], cmap='gray')
+
             ax1.set_title(f"Class {i+1} - Z slice")
             ax2.set_title(f"Class {i+1} - Y slice")
             ax3.set_title(f"Class {i+1} - X slice")
+
             ax1.axis('off')
             ax2.axis('off')
             ax3.axis('off')
@@ -704,7 +710,7 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         output_path = Path(out_dir) / rel_output_path
         
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        fig.savefig(output_path, dpi=300, bbox_inches='tight')
+        fig.savefig(output_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         
         logger.info(f"Created Class3D visualization: {output_path}")
@@ -1185,7 +1191,7 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                 continue
             
             # Track job completion status
-            if not job_is_complete:
+            if not job_is_complete and job['type'] not in ['AutoPick']:
                 newly_incomplete_jobs.add(job['name'])
                 logger.debug(f"Job {job['name']} is incomplete - will be tracked for updates")
             elif job['name'] in incomplete_jobs:
