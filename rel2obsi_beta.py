@@ -516,6 +516,10 @@ def generate_refine3d_visualization(job_dir, out_dir, job_name):
             with mrcfile.open(map_file) as mrc:
                 map_arr = mrc.data
                 map_arr = normalize(map_arr)
+
+            # Klassennummer aus Dateiname extrahieren (RELION-konform)
+            m = re.search(r'class(\d+)', map_file.name)
+            class_id = int(m.group(1)) if m else i + 1
             
             ax1 = plt.subplot(total_rows, 3, i*3 + 1)
             ax2 = plt.subplot(total_rows, 3, i*3 + 2) 
@@ -529,9 +533,9 @@ def generate_refine3d_visualization(job_dir, out_dir, job_name):
             ax2.imshow(map_arr[:, mid_y, :], cmap='gray')
             ax3.imshow(map_arr[:, :, mid_x], cmap='gray')
 
-            ax1.set_title(f"Class {i+1} - Z slice")
-            ax2.set_title(f"Class {i+1} - Y slice")
-            ax3.set_title(f"Class {i+1} - X slice")
+            ax1.set_title(f"Class {class_id} - Z slice")
+            ax2.set_title(f"Class {class_id} - Y slice")
+            ax3.set_title(f"Class {class_id} - X slice")
 
             ax1.axis('off')
             ax2.axis('off')
