@@ -1209,11 +1209,20 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                     f.write(f"title: {job['name']} - {job['type']}\n")
                     f.write(f"date: {datetime.datetime.now().strftime('%Y-%m-%d')}\n")
                     
+                    # Project name tag
+                    project_name = os.path.basename(os.path.abspath(project_dir))
+
+                    # Job-ID tag (e.g. job003)
+                    job_id = job_name
+
+
                     # Add tags from job details or defaults
                     tags = job['details'].get('tags', ["relion", job['type'].lower(), "cryo-em"])
                     # Add output folder name as tag
                     output_folder_name = os.path.basename(os.path.normpath(output_dir))
                     tags.append(output_folder_name)
+                    tags.append(job_id)
+                    tags.append(project_name)
                     # Convert tags list to string
                     tags_str = ', '.join([f'"{tag}"' for tag in tags])
                     f.write(f"tags: [{tags_str}]\n")
