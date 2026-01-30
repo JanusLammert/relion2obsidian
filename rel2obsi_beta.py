@@ -1557,7 +1557,7 @@ def main():
     parser.add_argument("-i", "--project_dir", required=True, help="Path to the RELION project directory.")
     parser.add_argument("-o", "--output_dir", required=True, help="Path to the output directory for Obsidian notes.")
     parser.add_argument("--force", action="store_true", help="Force regeneration of existing notes.")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging.")
     
     args = parser.parse_args()
     
