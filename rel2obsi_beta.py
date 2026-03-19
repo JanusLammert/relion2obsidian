@@ -19,6 +19,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import shutil
 import matplotlib
+from canvas_generator import build_canvas_from_jobs
+
 matplotlib.use('Agg')
 
 # Configure logging
@@ -99,8 +101,12 @@ def parse_relion_jobs(project_dir):
     
     # Process job files
     for job_path in tqdm(job_files, desc="Processing jobs"):
-        job_name = os.path.basename(os.path.dirname(job_path))
-        root = os.path.dirname(job_path)
+        job_dir_path = os.path.dirname(job_path)           # z.B. /project/CtfFind/job003
+        job_name     = os.path.basename(job_dir_path)      # z.B. job003  (kurz, chron. Sortierung)
+        job_type_dir = os.path.basename(
+            os.path.dirname(job_dir_path)
+        )                                                   # z.B. CtfFind (für Typ-Erkennung)
+        root = job_dir_path
         file = os.path.basename(job_path)
         
         try:
@@ -116,7 +122,7 @@ def parse_relion_jobs(project_dir):
                 'CoordinateExport', 'CtfPlot', 'ParticleSubtract', 'AutoRefine'
             ]
 
-            job_type = next((t for t in job_dir_patterns if t in root), "Unknown")
+            job_type = next((t for t in job_dir_patterns if t == job_type_dir), "Unknown")
 
 
             # Get creation time for sorting/timeline
@@ -178,7 +184,7 @@ def parse_relion_jobs(project_dir):
                 if processes is not None and edges is not None:
                     try:
                         # current job name, e.g. 'job003'
-                        current_job_id = job_name.split("/")[-1]
+                        current_job_id = job_name  # already short form, e.g. 'job003'
                         # full process name, e.g. 'CtfFind/job003/' (with trailing slash)
                         current_proc_full = processes[
                             processes["rlnPipeLineProcessName"].str.endswith(current_job_id + "/")
@@ -186,7 +192,7 @@ def parse_relion_jobs(project_dir):
                         if not current_proc_full.empty:
                             process_name = current_proc_full["rlnPipeLineProcessName"].iloc[0]
 
-                            # 1️⃣ find all edges that *point to* this job (inputs)
+                            #find all edges that *point to* this job (inputs)
                             for _, edge in edges.iterrows():
                                 to_proc = edge["rlnPipeLineEdgeProcess"].strip()
                                 if to_proc.rstrip("/") == process_name.rstrip("/"):
@@ -198,7 +204,7 @@ def parse_relion_jobs(project_dir):
                                         if from_job not in input_jobs:
                                             input_jobs.append(from_job)
 
-                            # 2️⃣ find all edges that *originate* from this job (outputs)
+                            #find all edges that *originate* from this job (outputs)
                             for _, edge in edges.iterrows():
                                 from_node = edge["rlnPipeLineEdgeFromNode"].strip()
                                 if from_node.startswith(process_name.rstrip("/")):
@@ -1095,7 +1101,7 @@ def batch_generate_class2d_images(class2d_jobs, output_dir, force=False, max_wor
     
     return class2d_montages
 
-def create_obsidian_notes(jobs, output_dir, force=False):
+def create_obsidian_notes(jobs, output_dir, force=False, project_dir=None, canvas_name=None, canvas_depth=2):
     """Create or update Obsidian notes for all jobs"""
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -1429,6 +1435,15 @@ def create_obsidian_notes(jobs, output_dir, force=False):
         # Create an index file for easier navigation
         create_index_file(all_jobs, output_dir)
         
+        logger.info("Erzeuge Obsidian Canvas (Job-Graph)...")
+        build_canvas_from_jobs(
+            list(all_jobs.values()),
+            output_dir,
+            project_dir,
+            canvas_name=canvas_name,
+            canvas_depth=canvas_depth,
+        )
+
         # Update incomplete jobs tracking
         save_incomplete_jobs(output_dir, newly_incomplete_jobs)
         
@@ -1558,29 +1573,54 @@ def main():
     parser.add_argument("-o", "--output_dir", required=True, help="Path to the output directory for Obsidian notes.")
     parser.add_argument("--force", action="store_true", help="Force regeneration of existing notes.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging.")
-    
+    parser.add_argument(
+        "--canvas-name",
+        default=None,
+        help=(
+            "Name of the generated Canvas file (without .canvas extension). "
+            "Defaults to the project directory name if not set."
+        ),
+    )
+    parser.add_argument(
+        "--canvas-depth",
+        type=int,
+        default=2,
+        help=(
+            "How many directory levels above --output_dir the Canvas file is saved. "
+            "Default: 2  →  vault/MyCanvas.canvas  +  vault/Project/Subproject/notes/. "
+            "Use 1 for  vault/MyCanvas.canvas  +  vault/Project/notes/."
+        ),
+    )
+
     args = parser.parse_args()
-    
+
     # Set log level based on verbosity
     if args.verbose:
         logger.setLevel(logging.DEBUG)
-    
+
     try:
         # Show script information
         logger.info(f"Relion to Obsidian Converter")
         logger.info(f"Project directory: {args.project_dir}")
         logger.info(f"Output directory: {args.output_dir}")
-        
+
         # Read all job data first to build the complete relationship graph
         logger.info("Parsing RELION project directory...")
         jobs = list(parse_relion_jobs(args.project_dir))
         logger.info(f"Found {len(jobs)} jobs.")
-        
+
         # Create or update notes with links between jobs
-        create_obsidian_notes(jobs, args.output_dir, args.force)
+        create_obsidian_notes(
+            jobs,
+            args.output_dir,
+            args.force,
+            args.project_dir,
+            canvas_name=args.canvas_name,
+            canvas_depth=args.canvas_depth,
+        )
         logger.info(f"Obsidian notes created in {args.output_dir}")
         logger.info("Open this directory as an Obsidian vault to view the job structure.")
-        
+
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         logger.debug(traceback.format_exc())
