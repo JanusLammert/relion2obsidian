@@ -367,3 +367,5 @@ For detailed error information, check `relion_to_obsidian.log` in the directory 
 ## Development Status
 
 This tool is currently in active development. The beta version has limited testing — user feedback and bug reports are welcome.
+
+Contact: Janus Lammert (j.lammert@fz-juelich.de)
