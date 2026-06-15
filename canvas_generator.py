@@ -15,7 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
-
 """
 canvas_generator.py
 ====================
@@ -319,15 +318,29 @@ def assign_positions(jobs_by_name: dict, inputs: dict, outputs: dict = None):
             cursor = y + NODE_H + V_GAP
 
     # --- Schritt 3: Eltern-Zentrierung nach Überlappungskorrektur (von rechts) --
+    # Zentriere Eltern über ihre Kinder, aber verhindere dabei neue Überlappungen
+    # durch eine cursor-basierte Separation nach dem Zentrieren.
     for col_idx in range(max_depth - 1, -1, -1):
-        nodes_in_col = sorted(cols.get(col_idx, []),
-                              key=lambda n: positions[n][1])
+        nodes_in_col = cols.get(col_idx, [])
         x = col_idx * (NODE_W + H_GAP)
+
+        # Gewünschte y-Positionen berechnen (Zentrierung über Kinder)
+        desired = {}
         for name in nodes_in_col:
             children = [c for c in outputs.get(name, []) if c in positions]
             if children:
                 child_ys = [positions[c][1] for c in children]
-                positions[name] = (x, (min(child_ys) + max(child_ys)) / 2.0)
+                desired[name] = (min(child_ys) + max(child_ys)) / 2.0
+            else:
+                desired[name] = positions[name][1]
+
+        # Nach gewünschter y-Position sortieren, dann Cursor-Pass gegen Überlappung
+        sorted_nodes = sorted(nodes_in_col, key=lambda n: (desired[n], n))
+        cursor = 0.0
+        for name in sorted_nodes:
+            y = max(desired[name], cursor)
+            positions[name] = (x, y)
+            cursor = y + NODE_H + V_GAP
 
     # Ganzzahlige Koordinaten für sauberes JSON
     return {name: (int(x), int(y)) for name, (x, y) in positions.items()}
