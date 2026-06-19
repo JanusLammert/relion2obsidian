@@ -1,0 +1,17 @@
+# Python bytecode/cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs and run-state produced by the tool itself
+relion_to_obsidian.log
+.incomplete_jobs.txt
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Virtual environments
+venv/
+.venv/
