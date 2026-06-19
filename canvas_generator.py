@@ -272,14 +272,6 @@ def assign_positions(jobs_by_name: dict, inputs: dict, outputs: dict = None):
     # y-Cursor je Spalte – wächst von oben nach unten
     col_cursor = defaultdict(float)   # col_idx -> nächste freie y-Position
 
-    def subtree_y_span(name):
-        """Gibt (min_y, max_y) des gesamten Teilbaums zurück (nach aktuellem Stand)."""
-        children = [c for c in outputs.get(name, []) if c in positions]
-        if not children:
-            return positions[name][1], positions[name][1]
-        spans = [subtree_y_span(c) for c in children]
-        return min(s[0] for s in spans), max(s[1] for s in spans)
-
     # Verarbeite alle Tiefen von der tiefsten zur flachsten
     for col_idx in range(max_depth, -1, -1):
         nodes_in_col = cols.get(col_idx, [])

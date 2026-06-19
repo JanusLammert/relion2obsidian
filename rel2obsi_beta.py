@@ -41,16 +41,44 @@ from canvas_generator import build_canvas_from_jobs
 
 matplotlib.use('Agg')
 
-# Configure logging
+# Configure logging.
+# NOTE: previously this module attached a FileHandler("relion_to_obsidian.log")
+# at *import* time via logging.basicConfig(). That meant merely importing this
+# module (e.g. from canvas_generator.py's standalone CLI mode) created a log
+# file as a side effect in the current working directory, regardless of
+# whether the importer wanted file logging. We now only set up a stream
+# handler by default; the file handler is attached explicitly in main() when
+# this script is actually run.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("relion_to_obsidian.log"),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger("rel2obsi")
+
+def _attach_file_logging(log_path="relion_to_obsidian.log"):
+    """Attach a file handler for logging. Called explicitly from main() so
+    that importing this module never creates a log file as a side effect."""
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logging.getLogger().addHandler(file_handler)
+
+# Known RELION job-type directory names. Previously this list was duplicated
+# verbatim in find_job_files() and parse_relion_jobs(); kept as a single
+# module-level constant so a future RELION job type only needs to be added
+# in one place instead of risking the two copies drifting out of sync.
+JOB_DIR_PATTERNS = [
+    'Import', 'MotionCorr', 'CtfFind', 'ManualPick', 'AutoPick', 'Extract', 'Select', 'Subset',
+    'Class2D', 'Class3D', 'Refine3D', 'InitialModel', 'MultiBody', 'Reconstruct',
+    'Polish', 'CtfRefine', 'BayesianPolishing', 'PostProcess', 'LocalRes', 'MaskCreate',
+    'External', 'Subtract', 'JoinStar', 'Split', 'MovieRefine', 'TiltSeries',
+    'TomogramReconstruct', 'TomogramCtfRefine', 'TomogramClassify3D', 'TomogramRefine3D',
+    'ResMap', 'MultiBodyRefine', 'HelicalRefine3D', 'HelicalInitialModel',
+    'Export', 'ImportMovies', 'MotionCorrMulti', 'Recenter', 'RelionIt',
+    'CoordinateExport', 'CtfPlot', 'ParticleSubtract', 'AutoRefine'
+]
 
 def find_job_files(project_dir, max_depth=2, current_depth=0):
     """Fast scan for job files using os.scandir, limited to max_depth.
@@ -58,16 +86,6 @@ def find_job_files(project_dir, max_depth=2, current_depth=0):
     Always skip Micrographs folders.
     """
     job_files = []
-    job_dir_patterns = [
-        'Import', 'MotionCorr', 'CtfFind', 'ManualPick', 'AutoPick', 'Extract', 'Select', 'Subset',
-        'Class2D', 'Class3D', 'Refine3D', 'InitialModel', 'MultiBody', 'Reconstruct',
-        'Polish', 'CtfRefine', 'BayesianPolishing', 'PostProcess', 'LocalRes', 'MaskCreate',
-        'External', 'Subtract', 'JoinStar', 'Split', 'MovieRefine', 'TiltSeries',
-        'TomogramReconstruct', 'TomogramCtfRefine', 'TomogramClassify3D', 'TomogramRefine3D',
-        'ResMap', 'MultiBodyRefine', 'HelicalRefine3D', 'HelicalInitialModel',
-        'Export', 'ImportMovies', 'MotionCorrMulti', 'Recenter', 'RelionIt',
-        'CoordinateExport', 'CtfPlot', 'ParticleSubtract', 'AutoRefine'
-    ]
 
     try:
         for entry in os.scandir(project_dir):
@@ -78,7 +96,7 @@ def find_job_files(project_dir, max_depth=2, current_depth=0):
 
                 # Nur im ersten Level (current_depth == 0) filtern nach bekannten Jobtypen
                 if current_depth == 0:
-                    if entry.name not in job_dir_patterns:
+                    if entry.name not in JOB_DIR_PATTERNS:
                         continue  # Nicht in Liste → überspringen
 
                 # In erlaubte Ordner weitergehen
@@ -129,18 +147,7 @@ def parse_relion_jobs(project_dir):
         
         try:
             # Determine job type based on folder name
-            job_dir_patterns = [
-                'Import', 'MotionCorr', 'CtfFind', 'ManualPick', 'AutoPick', 'Extract', 'Select', 'Subset',
-                'Class2D', 'Class3D', 'Refine3D', 'InitialModel', 'MultiBody', 'Reconstruct',
-                'Polish', 'CtfRefine', 'BayesianPolishing', 'PostProcess', 'LocalRes', 'MaskCreate',
-                'External', 'Subtract', 'JoinStar', 'Split', 'MovieRefine', 'TiltSeries',
-                'TomogramReconstruct', 'TomogramCtfRefine', 'TomogramClassify3D', 'TomogramRefine3D',
-                'ResMap', 'MultiBodyRefine', 'HelicalRefine3D', 'HelicalInitialModel',
-                'Export', 'ImportMovies', 'MotionCorrMulti', 'Recenter', 'RelionIt',
-                'CoordinateExport', 'CtfPlot', 'ParticleSubtract', 'AutoRefine'
-            ]
-
-            job_type = next((t for t in job_dir_patterns if t == job_type_dir), "Unknown")
+            job_type = next((t for t in JOB_DIR_PATTERNS if t == job_type_dir), "Unknown")
 
 
             # Get creation time for sorting/timeline
@@ -223,9 +230,18 @@ def parse_relion_jobs(project_dir):
                                             input_jobs.append(from_job)
 
                             #find all edges that *originate* from this job (outputs)
+                            # NOTE: must compare the exact "JobType/jobXXX" segment, not a
+                            # string prefix - startswith() previously caused false matches
+                            # such as "CtfFind/job1" matching "CtfFind/job10".
+                            current_job_full = f"{job_type_dir}/{current_job_id}"
                             for _, edge in edges.iterrows():
                                 from_node = edge["rlnPipeLineEdgeFromNode"].strip()
-                                if from_node.startswith(process_name.rstrip("/")):
+                                from_parts = from_node.split("/")
+                                if len(from_parts) >= 2:
+                                    from_job_full = f"{from_parts[0]}/{from_parts[1]}"
+                                else:
+                                    continue
+                                if from_job_full == current_job_full:
                                     to_proc = edge["rlnPipeLineEdgeProcess"].strip()
                                     parts = to_proc.split("/")
                                     if len(parts) >= 2:
@@ -242,50 +258,6 @@ def parse_relion_jobs(project_dir):
 
             job_details["input_jobs"] = input_jobs
             job_details["output_jobs"] = output_jobs
-
-
-            
-            # Use cached pipeline data if available
-            if pipeline_path:
-                if pipeline_path not in pipeline_cache:
-                    try:
-                        pipeline_cache[pipeline_path] = starfile.read(pipeline_path)
-                        logger.debug(f"Cached pipeline file: {pipeline_path}")
-                    except Exception as e:
-                        logger.warning(f"Error reading pipeline file {pipeline_path}: {str(e)}")
-                        pipeline_cache[pipeline_path] = None
-            else:
-                logger.warning("No pipeline.star or default_pipeline.star found in project root")
-                pipeline_cache[project_dir] = None
-            
-            # pipeline_data = pipeline_cache.get(pipeline_path)
-            # if pipeline_data and "pipeline_processes" in pipeline_data:
-            #     try:
-            #         processes = pipeline_data["pipeline_processes"]
-            #         current_job_id = job_name.split("/")[-1]
-            #         job_row = processes[processes["rlnPipeLineProcessName"].str.endswith(current_job_id)]
-            #         if not job_row.empty:
-            #             # Get input edges for this job from the process_edges table if available
-            #             if "pipeline_input_edges" in pipeline_data:
-            #                 edges = pipeline_data["pipeline_input_edges"]
-            #                 # Get process ID for current job
-            #                 process_id = job_row["rlnPipeLineProcessID"].iloc[0]
-            #                 # Find input edges that connect to this process
-            #                 input_edges = edges[edges["rlnPipeLineProcessToID"] == process_id]
-                            
-            #                 # Get the corresponding input job names
-            #                 for _, edge in input_edges.iterrows():
-            #                     from_id = edge["rlnPipeLineProcessFromID"]
-            #                     from_job = processes[processes["rlnPipeLineProcessID"] == from_id]
-            #                     if not from_job.empty:
-            #                         input_job_name = from_job["rlnPipeLineProcessName"].iloc[0]
-            #                         input_jobs.append(input_job_name)
-            #                 logger.debug(f"Job {job_name} - found {len(input_jobs)} input jobs: {input_jobs}")
-
-            #     except Exception as e:
-            #         logger.warning(f"Error parsing pipeline.star for {job_name}: {str(e)}")
-
-            # job_details["input_jobs"] = input_jobs
 
             # Parse note.txt for command line parameters
             note_path = os.path.join(root, "note.txt")
@@ -432,12 +404,6 @@ def generate_class2d_image(job_dir, out_dir, iteration=-1):
             logger.warning(f"Missing required files for Class2D visualization in {job_dir}")
             return None
 
-
-        #iteration = iteration if iteration >= 0 else min(
-        #    len(model_star_files), len(particle_star_files), len(mrc_stack_files)
-        #) - 1
-
-
         # Check if job is still running by looking for a RELION_JOB_EXIT_SUCCESS file
         success_file = class2d_dir / "RELION_JOB_EXIT_SUCCESS"
         job_is_incomplete = not success_file.exists()
@@ -472,10 +438,12 @@ def generate_class2d_image(job_dir, out_dir, iteration=-1):
         # Sort indices by descending class distribution
         sorted_indices = np.argsort(-class_distribution)
 
-        # Sort mrc stack incrementally to avoid creating a large sorted copy
-        mrc_stk_sorted = np.empty_like(mrc_stk)
-        for i, idx in enumerate(sorted_indices):
-            mrc_stk_sorted[i] = mrc_stk[idx]
+        # NOTE: the previous explicit per-row copy loop ("to avoid creating a
+        # large sorted copy") allocated a full second array via np.empty_like
+        # up front anyway, so it had the same peak memory footprint as fancy
+        # indexing below while being much slower due to the Python-level loop.
+        # Plain fancy indexing is equivalent in memory and faster.
+        mrc_stk_sorted = mrc_stk[sorted_indices]
 
         # Generate labeled images incrementally
         labeled_images = []
@@ -672,7 +640,15 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         if not map_files_one_it:
             logger.warning(f"No maps found for iteration {iter_num_string} in {job_dir}")
             return None
-        
+
+        # NOTE: glob() order is filesystem-dependent and not guaranteed to match
+        # class number order. Sort explicitly by the parsed class index so the
+        # "Class N" labels below are always correct, regardless of directory order.
+        def _class_num(fp):
+            m = re.search(r'class(\d+)', fp.name)
+            return int(m.group(1)) if m else 0
+        map_files_one_it = sorted(map_files_one_it, key=_class_num)
+
         NUM_CLASSES = len(map_files_one_it)
         
         # Read map dimensions
@@ -713,9 +689,15 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
             ax2.imshow(map_arr[:, mid_y, :], cmap='gray')
             ax3.imshow(map_arr[:, :, mid_x], cmap='gray')
 
-            ax1.set_title(f"Class {i+1} - Z slice")
-            ax2.set_title(f"Class {i+1} - Y slice")
-            ax3.set_title(f"Class {i+1} - X slice")
+            # Use the actual class number parsed from the filename, not the loop
+            # index - map_files_one_it is now sorted by class number, but the
+            # index 'i' is still just a position counter and was previously
+            # used directly as a (sometimes wrong) display label.
+            class_id = _class_num(map_file) or (i + 1)
+
+            ax1.set_title(f"Class {class_id} - Z slice")
+            ax2.set_title(f"Class {class_id} - Y slice")
+            ax3.set_title(f"Class {class_id} - X slice")
 
             ax1.axis('off')
             ax2.axis('off')
@@ -776,8 +758,8 @@ def batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force=Fals
             expected_vis_path = f"assets/Refine3D_{job_nr}_analysis.png"
             full_vis_path = Path(output_dir) / expected_vis_path
             
-            if full_vis_path.exists() and not force:
-                logger.debug(f"Refine3D visualization already exists: {expected_vis_path}")
+            if full_vis_path.exists() and not force and not _cached_visualization_is_stale(full_vis_path, job_dir):
+                logger.debug(f"Refine3D visualization already exists and is up to date: {expected_vis_path}")
                 return job['name'], expected_vis_path
             
             # Generate new visualization
@@ -832,8 +814,8 @@ def batch_generate_class3d_visualizations(class3d_jobs, output_dir, force=False,
             expected_vis_path = f"assets/Class3D_{job_nr}_it{iter_num_string}_analysis.png"
             full_vis_path = Path(output_dir) / expected_vis_path
             
-            if full_vis_path.exists() and not force:
-                logger.debug(f"Class3D visualization already exists: {expected_vis_path}")
+            if full_vis_path.exists() and not force and not _cached_visualization_is_stale(full_vis_path, job_dir):
+                logger.debug(f"Class3D visualization already exists and is up to date: {expected_vis_path}")
                 return job['name'], expected_vis_path
             
             # Generate new visualization
@@ -862,6 +844,41 @@ def batch_generate_class3d_visualizations(class3d_jobs, output_dir, force=False,
     
     return class3d_visualizations
 
+def _cached_visualization_is_stale(cached_path, job_dir, source_globs=("*.mrc", "*.mrcs", "*.star")):
+    """
+    Check whether a cached visualization is older than any relevant source file
+    in job_dir. Previously, a cached image's mere existence was treated as
+    "up to date" - if a job was re-run with the same job number (e.g. after
+    changing classification parameters), the stale montage/figure would be
+    served forever unless --force was passed. This compares modification
+    times to catch that case automatically.
+
+    Returns True if the cache should be regenerated (i.e. is stale or the
+    check could not be performed), False if the cache is still valid.
+    """
+    try:
+        cached_path = Path(cached_path)
+        if not cached_path.exists():
+            return True
+        cached_mtime = cached_path.stat().st_mtime
+        job_dir = Path(job_dir)
+        newest_source_mtime = 0.0
+        for pattern in source_globs:
+            for f in job_dir.glob(pattern):
+                try:
+                    newest_source_mtime = max(newest_source_mtime, f.stat().st_mtime)
+                except OSError:
+                    continue
+        # If we found no source files at all, don't claim staleness based on
+        # nothing - fall back to "not stale" so we don't regenerate pointlessly.
+        if newest_source_mtime == 0.0:
+            return False
+        return newest_source_mtime > cached_mtime
+    except Exception as e:
+        logger.debug(f"Could not determine cache staleness for {cached_path}: {str(e)}")
+        return True  # err on the side of regenerating rather than serving a possibly-stale cache
+
+
 def get_job_note_filename(job):
     """Generate consistent filename for a job"""
     # Sanitize filename to avoid issues in different file systems
@@ -869,44 +886,70 @@ def get_job_note_filename(job):
     return f"{safe_name}_{job['type']}.md"
 
 def parse_refine3d_runout(job_dir):
-    """Parse run.out file for Refine3D jobs to extract resolution and helical parameters"""
+    """
+    Parse run.out file for Refine3D jobs to extract resolution and helical parameters.
+
+    NOTE on robustness: run.out parsing depends on exact wording of RELION's
+    stdout, which has changed slightly across RELION versions (3.x/4.x/5.x).
+    If the expected phrasing isn't found, we fall back to reading the
+    resolution directly from run_model.star (a structured, version-stable
+    source) rather than silently returning nothing. Helical twist/rise have
+    no equally reliable structured fallback within this job's own output, so
+    those still depend on run.out wording matching - if your RELION version
+    uses different phrasing, refined_twist/refined_rise may be missing.
+    """
     result = {}
-    run_out_path = Path(job_dir) / "run.out"
-    
-    if not run_out_path.exists():
-        return result
-    
-    try:
-        with open(run_out_path, 'r') as f:
-            lines = f.readlines()
-            
-        # Search for resolution (Final resolution line)
-        for line in lines:
-            if "Final resolution (without masking) is:" in line:
+    job_dir = Path(job_dir)
+    run_out_path = job_dir / "run.out"
+
+    if run_out_path.exists():
+        try:
+            with open(run_out_path, 'r') as f:
+                lines = f.readlines()
+
+            # Search for resolution (Final resolution line)
+            for line in lines:
+                if "Final resolution (without masking) is:" in line:
+                    try:
+                        resolution = line.split(":")[-1].strip()
+                        result['resolution'] = float(resolution)
+                    except (ValueError, IndexError):
+                        logger.warning(f"Could not parse resolution from line: {line}")
+
+            # Search for helical parameters (use last occurrence)
+            helical_lines = [line for line in lines if "Averaged helical twist" in line and "degrees, rise" in line and "Angstroms" in line]
+            if helical_lines:
+                last_helical_line = helical_lines[-1]
                 try:
-                    resolution = line.split(":")[-1].strip()
-                    result['resolution'] = float(resolution)
+                    # Parse: Averaged helical twist = -1.56311 degrees, rise = 4.79239 Angstroms.
+                    parts = last_helical_line.split("=")
+                    twist_part = parts[1].split("degrees")[0].strip()
+                    rise_part = parts[2].split("Angstroms")[0].strip()
+
+                    result['refined_twist'] = float(twist_part)
+                    result['refined_rise'] = float(rise_part)
                 except (ValueError, IndexError):
-                    logger.warning(f"Could not parse resolution from line: {line}")
-        
-        # Search for helical parameters (use last occurrence)
-        helical_lines = [line for line in lines if "Averaged helical twist" in line and "degrees, rise" in line and "Angstroms" in line]
-        if helical_lines:
-            last_helical_line = helical_lines[-1]
+                    logger.warning(f"Could not parse helical parameters from line: {last_helical_line}")
+
+        except Exception as e:
+            logger.error(f"Error parsing run.out for Refine3D: {str(e)}")
+    else:
+        logger.debug(f"No run.out found in {job_dir}; will try run_model.star fallback for resolution")
+
+    # Fallback: if resolution wasn't found via run.out (missing file, or wording
+    # didn't match this RELION version), try reading it directly from the STAR file.
+    if 'resolution' not in result:
+        model_star_fpath = job_dir / "run_model.star"
+        if model_star_fpath.exists():
             try:
-                # Parse: Averaged helical twist = -1.56311 degrees, rise = 4.79239 Angstroms.
-                parts = last_helical_line.split("=")
-                twist_part = parts[1].split("degrees")[0].strip()
-                rise_part = parts[2].split("Angstroms")[0].strip()
-                
-                result['refined_twist'] = float(twist_part)
-                result['refined_rise'] = float(rise_part)
-            except (ValueError, IndexError):
-                logger.warning(f"Could not parse helical parameters from line: {last_helical_line}")
-    
-    except Exception as e:
-        logger.error(f"Error parsing run.out for Refine3D: {str(e)}")
-    
+                model_dict = starfile.read(model_star_fpath)
+                res = model_dict.get("model_general", {}).get("rlnCurrentResolution")
+                if res is not None:
+                    result['resolution'] = float(res)
+                    logger.debug(f"Resolution for {job_dir} recovered from run_model.star fallback")
+            except Exception as e:
+                logger.warning(f"Could not read fallback resolution from {model_star_fpath}: {str(e)}")
+
     return result
 
 def parse_select_runout(job_dir):
@@ -1090,8 +1133,8 @@ def batch_generate_class2d_images(class2d_jobs, output_dir, force=False, max_wor
             expected_montage_path = f"assets/Class2D_{job_nr}_montage_It_{iteration}.png"
             full_image_path = Path(output_dir) / expected_montage_path
             
-            if full_image_path.exists() and not force:
-                logger.debug(f"Class2D image already exists: {expected_montage_path}")
+            if full_image_path.exists() and not force and not _cached_visualization_is_stale(full_image_path, job_dir):
+                logger.debug(f"Class2D image already exists and is up to date: {expected_montage_path}")
                 return job['name'], expected_montage_path
             
             # Generate new montage
@@ -1611,6 +1654,10 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Attach file logging now that we're actually running as a script
+    # (not just being imported by canvas_generator.py's standalone mode).
+    _attach_file_logging()
 
     # Set log level based on verbosity
     if args.verbose:
