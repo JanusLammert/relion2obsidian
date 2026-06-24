@@ -1,17 +1,24 @@
-# Python bytecode/cache
+# macOS
+.DS_Store
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 
-# Logs and run-state produced by the tool itself
-relion_to_obsidian.log
-.incomplete_jobs.txt
+# Conda / virtual environments
+.conda/
+env/
+venv/
+*.egg-info/
 
-# Editors / OS
-.DS_Store
+# Runtime logs
+*.log
+relion_to_obsidian.log
+
+# Generated output (belongs in the Obsidian vault, not the source repo)
+assets/
+
+# Editor
 .vscode/
 .idea/
-
-# Virtual environments
-venv/
-.venv/
