@@ -76,6 +76,8 @@ JOB_TYPE_COLORS = {
     "MaskCreate":       "3",   # gelb
     "LocalRes":         "3",   # gelb
     "MultiBody":        "6",   # lila
+    # External browser-tool nodes (r2o manifests)
+    "ExternalTool":     "5",   # cyan – distinguishable from RELION jobs
 }
 
 # Knotenabmessungen
@@ -115,18 +117,19 @@ def parse_pipeline_edges(project_dir: str):
     ]
     pipeline_path = next((p for p in possible if os.path.exists(p)), None)
 
-    inputs  = defaultdict(list)   # job -> [upstream_jobs]
-    outputs = defaultdict(list)   # job -> [downstream_jobs]
+    inputs       = defaultdict(list)   # job -> [upstream_jobs]
+    outputs      = defaultdict(list)   # job -> [downstream_jobs]
+    consumers_of = defaultdict(list)   # file_path -> [consuming jobs] (for manifest child-edge matching)
 
     if pipeline_path is None:
         logger.warning("Keine pipeline.star / default_pipeline.star gefunden – keine Edges.")
-        return inputs, outputs
+        return inputs, outputs, consumers_of
 
     try:
         data = starfile.read(pipeline_path)
     except Exception as e:
         logger.error(f"Fehler beim Lesen der Pipeline-Datei {pipeline_path}: {e}")
-        return inputs, outputs
+        return inputs, outputs, consumers_of
 
     processes = (
         data.get("data_pipeline_processes")
@@ -139,10 +142,10 @@ def parse_pipeline_edges(project_dir: str):
 
     if processes is None or edges is None:
         logger.warning("Pipeline-Datei enthält keine Prozesse oder Edges.")
-        return inputs, outputs
+        return inputs, outputs, consumers_of
 
     # Hilfsfunktion: Node-Pfad -> Job-Name (z.B. 'CtfFind/job003/micrographs_ctf.star' -> 'CtfFind/job003')
-    def node_to_job(node_path: str) -> str | None:
+    def node_to_job(node_path: str):
         parts = node_path.strip().rstrip("/").split("/")
         if len(parts) >= 2:
             return f"{parts[0]}/{parts[1]}"
@@ -157,6 +160,10 @@ def parse_pipeline_edges(project_dir: str):
         from_node  = edge.get("rlnPipeLineEdgeFromNode", "").strip()
         to_process = edge.get("rlnPipeLineEdgeProcess",  "").strip().rstrip("/")
 
+        # Build consumers_of for manifest child-edge resolution
+        if from_node and to_process:
+            consumers_of[from_node].append(to_process)
+
         upstream_job   = node_to_job(from_node)
         downstream_job = node_to_job(to_process)
 
@@ -165,8 +172,6 @@ def parse_pipeline_edges(project_dir: str):
         if upstream_job == downstream_job:
             continue   # Selbst-Referenz überspringen
 
-        # Sicherstellen, dass beide Jobs tatsächlich existieren
-        # (leicht unterschiedliche Schreibweisen abfangen)
         upstream_norm   = upstream_job.rstrip("/")
         downstream_norm = downstream_job.rstrip("/")
 
@@ -177,9 +182,99 @@ def parse_pipeline_edges(project_dir: str):
 
     logger.info(
         f"Pipeline gelesen: {len(inputs)} Jobs mit Inputs, "
-        f"{len(outputs)} Jobs mit Outputs"
+        f"{len(outputs)} Jobs mit Outputs, "
+        f"{len(consumers_of)} file nodes"
     )
-    return inputs, outputs
+    return inputs, outputs, consumers_of
+
+
+# ---------------------------------------------------------------------------
+# R2O manifest discovery & edge injection
+# ---------------------------------------------------------------------------
+
+def find_r2o_manifests(project_dir: str) -> list:
+    """
+    Glob for *.r2o.json manifests anywhere under project_dir.
+    Returns a list of parsed dicts with an added '_manifest_path' key.
+    Only schema version 1.x manifests are accepted.
+    """
+    manifests = []
+    project_path = Path(project_dir)
+    for path in sorted(project_path.rglob("*.r2o.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                m = json.load(f)
+            schema = m.get("r2o_schema", "")
+            if not schema.startswith("1."):
+                logger.warning(f"Skipping manifest with unsupported schema '{schema}': {path}")
+                continue
+            if not m.get("id"):
+                logger.warning(f"Skipping manifest without 'id': {path}")
+                continue
+            m["_manifest_path"] = str(path)
+            manifests.append(m)
+        except Exception as e:
+            logger.warning(f"Could not read manifest {path}: {e}")
+    logger.info(f"Found {len(manifests)} r2o manifest(s)")
+    return manifests
+
+
+def inject_manifest_edges(
+    inputs: defaultdict,
+    outputs: defaultdict,
+    manifests: list,
+    proc_names: set,
+    consumers_of: defaultdict,
+) -> dict:
+    """
+    Insert manifest pseudo-nodes into the pipeline edge dicts in-place.
+
+    Parent edge: node_to_job(input.path) → ext_id
+      Falls back to link_hints.parent_job if path prefix is not a known process.
+
+    Child edge:  ext_id → every RELION job that consumes output.path
+      Resolved via consumers_of (file_path → [job]) built during pipeline parse.
+
+    Returns  { ext_id: manifest_dict }  for canvas node creation.
+    """
+    def _node_to_job(path):
+        parts = path.strip().rstrip("/").split("/")
+        return f"{parts[0]}/{parts[1]}" if len(parts) >= 2 else None
+
+    manifest_nodes = {}   # ext_id -> manifest
+
+    for m in manifests:
+        ext_id = f"r2o/{m['id']}"
+        manifest_nodes[ext_id] = m
+
+        # --- parent edges (inputs → ext_id) ---
+        for inp in m.get("inputs", []):
+            raw_path = inp.get("path", "").strip()
+            parent = _node_to_job(raw_path)
+            if parent and parent in proc_names:
+                if parent not in inputs[ext_id]:
+                    inputs[ext_id].append(parent)
+                if ext_id not in outputs[parent]:
+                    outputs[parent].append(ext_id)
+            else:
+                hint = m.get("link_hints", {}).get("parent_job", "")
+                if hint and hint in proc_names:
+                    if hint not in inputs[ext_id]:
+                        inputs[ext_id].append(hint)
+                    if ext_id not in outputs[hint]:
+                        outputs[hint].append(ext_id)
+
+        # --- child edges (ext_id → downstream RELION jobs) ---
+        for out in m.get("outputs", []):
+            raw_path = out.get("path", "").strip()
+            for child_job in consumers_of.get(raw_path, []):
+                child_norm = child_job.strip().rstrip("/")
+                if child_norm not in outputs[ext_id]:
+                    outputs[ext_id].append(child_norm)
+                if ext_id not in inputs[child_norm]:
+                    inputs[child_norm].append(ext_id)
+
+    return manifest_nodes
 
 
 def topo_sort(all_job_names, inputs, outputs=None):
@@ -412,12 +507,19 @@ def build_canvas_from_jobs(
             short_to_full[raw_name] = full_name
 
         # --- Edges aus Pipeline lesen (zuverlässiger als job.star) ---
-        inputs, outputs = parse_pipeline_edges(project_dir)
+        inputs, outputs, consumers_of = parse_pipeline_edges(project_dir)
+
+        # --- R2O manifests entdecken und Pseudo-Edges einfügen ---
+        manifests = find_r2o_manifests(project_dir)
+        proc_names_for_manifests = set(jobs_by_name.keys())
+        manifest_nodes = inject_manifest_edges(
+            inputs, outputs, manifests, proc_names_for_manifests, consumers_of
+        )
 
         # Fehlende Jobs aus Edges ergänzen (können im Scan fehlen)
         all_referenced = set(inputs.keys()) | set(outputs.keys())
         for ref in all_referenced:
-            if ref not in jobs_by_name:
+            if ref not in jobs_by_name and ref not in manifest_nodes:
                 parts = ref.split("/")
                 job_type = parts[0] if parts else "Unknown"
                 jobs_by_name[ref] = {
@@ -425,6 +527,15 @@ def build_canvas_from_jobs(
                     "type": job_type,
                     "details": {"tags": []},
                 }
+
+        # Manifest-Einträge in jobs_by_name eintragen (damit topo_sort sie positioniert)
+        for ext_id, m in manifest_nodes.items():
+            jobs_by_name[ext_id] = {
+                "name":    m.get("title") or m["id"],
+                "type":    "ExternalTool",
+                "_manifest": m,
+                "details": {"tags": ["external", m.get("tool", "").lower()]},
+            }
 
         # --- Positionen berechnen ---
         logger.info("Berechne Layout...")
@@ -445,37 +556,54 @@ def build_canvas_from_jobs(
 
             # Markdown-Notiz: get_note_stem erwartet den vollen Namen für den Dateinamen.
             # rel2obsi_beta.py erzeugt: {safe_name}_{job_type}.md  mit safe_name = "job003"
-            note_stem = f"{sanitize_filename(raw_name)}_{job_type}"
-            # Relativer Pfad vom Canvas-Verzeichnis zur Notiz
-            note_file = f"{notes_prefix}/{note_stem}.md"
+            manifest = job.get("_manifest")
 
-            # Anzeige-Name im Canvas: "job003\nCtfFind"
-            display = f"{raw_name}\n{job_type}"
+            if manifest:
+                # --- External tool node (r2o manifest) ---
+                m_id   = sanitize_filename(manifest["id"])
+                tool   = manifest.get("tool", "ExternalTool")
+                note_stem = f"ext_{m_id}"
+                note_file = f"{notes_prefix}/{note_stem}.md"
+                display   = f"{manifest.get('title') or manifest['id']}\n{tool}"
+                color     = JOB_TYPE_COLORS.get("ExternalTool", "5")
+                node = {
+                    "id":     node_id,
+                    "type":   "file",
+                    "file":   note_file,
+                    "x":      x,
+                    "y":      y,
+                    "width":  NODE_W,
+                    "height": NODE_H,
+                    "label":  display,
+                    "color":  color,
+                }
+            else:
+                # --- Regular RELION job node ---
+                note_stem = f"{sanitize_filename(raw_name)}_{job_type}"
+                note_file = f"{notes_prefix}/{note_stem}.md"
+                display   = f"{raw_name}\n{job_type}"
 
-            # Prüfe ob Job abgeschlossen ist
-            job_dir = Path(job["details"].get("job_path", ""))
-            if job_dir.is_file():
-                job_dir = job_dir.parent
-            success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
-            is_complete = success_file.exists() if job_dir != Path("") else False
+                job_dir = Path(job["details"].get("job_path", ""))
+                if job_dir.is_file():
+                    job_dir = job_dir.parent
+                success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+                is_complete  = success_file.exists() if job_dir != Path("") else False
 
-            node = {
-                "id":     node_id,
-                "type":   "file",
-                "file":   note_file,
-                "x":      x,
-                "y":      y,
-                "width":  NODE_W,
-                "height": NODE_H,
-                "label":  display,
-            }
-
-            color = JOB_TYPE_COLORS.get(job_type, "")
-            if color:
-                node["color"] = color
-
-            if not is_complete:
-                node["color"] = ""   # kein Farboverride → grau
+                node = {
+                    "id":     node_id,
+                    "type":   "file",
+                    "file":   note_file,
+                    "x":      x,
+                    "y":      y,
+                    "width":  NODE_W,
+                    "height": NODE_H,
+                    "label":  display,
+                }
+                color = JOB_TYPE_COLORS.get(job_type, "")
+                if color:
+                    node["color"] = color
+                if not is_complete:
+                    node["color"] = ""   # kein Farboverride → grau
 
             canvas_nodes.append(node)
 

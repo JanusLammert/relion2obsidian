@@ -37,7 +37,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import shutil
 import matplotlib
-from canvas_generator import build_canvas_from_jobs
+from canvas_generator import build_canvas_from_jobs, find_r2o_manifests
 
 matplotlib.use('Agg')
 
@@ -1493,9 +1493,46 @@ def create_obsidian_notes(jobs, output_dir, force=False, project_dir=None, canva
                     input_note_path = os.path.join(output_dir, get_job_note_filename(input_job))
                     update_note_with_backward_link(input_note_path, note_filename, job['name'], job['type'])
         
+        # --- Process R2O manifests from browser tools ---
+        if project_dir:
+            logger.info("Searching for r2o browser-tool manifests...")
+            manifests = find_r2o_manifests(project_dir)
+            if manifests:
+                # Build a job-name lookup for edge resolution
+                # full-name -> job:  "CtfFind/job003" style keys
+                full_name_jobs = {
+                    f"{j['type']}/{j['name']}": j for j in all_jobs.values()
+                }
+                # We also need inputs/outputs for manifest nodes —
+                # re-parse pipeline edges for the edge resolution pass.
+                from canvas_generator import parse_pipeline_edges, inject_manifest_edges
+                inp_edges, out_edges, consumers_of = parse_pipeline_edges(project_dir)
+                proc_names = set(full_name_jobs.keys())
+                manifest_nodes = inject_manifest_edges(
+                    inp_edges, out_edges, manifests, proc_names, consumers_of
+                )
+
+                for ext_id, m in manifest_nodes.items():
+                    parent_jobs  = inp_edges.get(ext_id, [])
+                    child_jobs   = out_edges.get(ext_id, [])
+                    note_fn, written = generate_external_tool_note(
+                        m, output_dir, parent_jobs, child_jobs, force=force
+                    )
+                    if written:
+                        # Back-link from each parent RELION job note to this manifest
+                        for parent_full in parent_jobs:
+                            parent_job = full_name_jobs.get(parent_full)
+                            if parent_job:
+                                parent_note = os.path.join(
+                                    output_dir, get_job_note_filename(parent_job)
+                                )
+                                update_note_with_backward_link(
+                                    parent_note, note_fn, m.get("title") or m["id"], m.get("tool", "ExternalTool")
+                                )
+
         # Create an index file for easier navigation
         create_index_file(all_jobs, output_dir)
-        
+
         logger.info("Erzeuge Obsidian Canvas (Job-Graph)...")
         build_canvas_from_jobs(
             list(all_jobs.values()),
@@ -1585,6 +1622,216 @@ def create_index_file(all_jobs, output_dir):
         logger.info(f"Created index file: {index_path}")
     except Exception as e:
         logger.error(f"Error creating index file: {str(e)}")
+
+# ---------------------------------------------------------------------------
+# R2O manifest registry (hash-based incremental tracking)
+# ---------------------------------------------------------------------------
+
+def _get_r2o_registry_path(output_dir):
+    return os.path.join(output_dir, ".r2o_manifests.json")
+
+def load_r2o_registry(output_dir):
+    """Load {manifest_id: content_hash} from the tracking file."""
+    path = _get_r2o_registry_path(output_dir)
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error reading r2o manifest registry: {e}")
+    return {}
+
+def save_r2o_registry(output_dir, registry):
+    """Persist {manifest_id: content_hash}."""
+    path = _get_r2o_registry_path(output_dir)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(registry, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving r2o manifest registry: {e}")
+
+def _manifest_hash(m):
+    """Stable hash of manifest content (excluding _manifest_path meta-key)."""
+    import hashlib
+    clean = {k: v for k, v in m.items() if not k.startswith("_")}
+    return hashlib.sha256(json.dumps(clean, sort_keys=True).encode()).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# External-tool note generator
+# ---------------------------------------------------------------------------
+
+def generate_external_tool_note(manifest, output_dir, inputs_edge, outputs_edge, force=False):
+    """
+    Write (or update) an Obsidian note for one r2o manifest.
+
+    inputs_edge  : list of RELION job full-names that feed into this manifest
+    outputs_edge : list of RELION job full-names that consume this manifest's outputs
+    Returns (note_filename, was_written).
+    """
+    import base64
+
+    m_id    = manifest["id"]
+    tool    = manifest.get("tool", "ExternalTool")
+    title   = manifest.get("title") or m_id
+    created = manifest.get("created", "")
+    version = manifest.get("tool_version", "")
+    notes   = manifest.get("notes", "")
+    params  = manifest.get("parameters", {})
+    summary = manifest.get("summary", {})
+
+    # Support both legacy single thumbnail and new screenshots array
+    screenshots = manifest.get("screenshots", [])
+    legacy_thumb = manifest.get("thumbnail_png_base64")
+    if legacy_thumb and not screenshots:
+        screenshots = [{"label": title, "png_base64": legacy_thumb}]
+
+    safe_id       = re.sub(r'[\\/*?:"<>|]', "_", m_id)
+    note_filename = f"ext_{safe_id}.md"
+    note_path     = os.path.join(output_dir, note_filename)
+
+    registry  = load_r2o_registry(output_dir)
+    cur_hash  = _manifest_hash(manifest)
+    prev_hash = registry.get(m_id)
+
+    if not force and os.path.exists(note_path) and prev_hash == cur_hash:
+        return note_filename, False   # unchanged — skip
+
+    # Save screenshots to assets/
+    saved_screenshots = []
+    if screenshots:
+        assets_dir = os.path.join(output_dir, "assets")
+        os.makedirs(assets_dir, exist_ok=True)
+        for i, shot in enumerate(screenshots):
+            b64 = shot.get("png_base64", "")
+            label = shot.get("label", f"screenshot_{i}")
+            if not b64:
+                continue
+            try:
+                fname = f"ext_{safe_id}_shot{i}.png"
+                with open(os.path.join(assets_dir, fname), "wb") as tf:
+                    tf.write(base64.b64decode(b64))
+                saved_screenshots.append((label, f"assets/{fname}"))
+            except Exception as e:
+                logger.warning(f"Could not save screenshot {i} for {m_id}: {e}")
+
+    try:
+        with open(note_path, "w", encoding="utf-8") as f:
+            # --- Frontmatter ---
+            f.write("---\n")
+            f.write(f"title: {title}\n")
+            f.write(f"date: {datetime.datetime.now().strftime('%Y-%m-%d')}\n")
+            tag_list = ["external", f"tool/{tool.lower()}", "cryo-em"]
+            f.write(f"tags: [{', '.join(repr(t) for t in tag_list)}]\n")
+            if created:
+                f.write(f"created: {created}\n")
+            if version:
+                f.write(f"tool_version: {version}\n")
+            f.write("---\n\n")
+
+            # --- Screenshots ---
+            for label, rel_path in saved_screenshots:
+                f.write(f"![{label}]({rel_path})\n\n")
+
+            # --- Overview ---
+            f.write("## Tool Information\n\n")
+            f.write(f"- **Tool**: {tool}")
+            if version:
+                f.write(f" v{version}")
+            f.write("\n")
+            if created:
+                f.write(f"- **Run at**: {created}\n")
+            if notes:
+                f.write(f"- **Notes**: {notes}\n")
+            f.write("\n")
+
+            # --- Inputs ---
+            inp_list = manifest.get("inputs", [])
+            if inp_list:
+                f.write("## Inputs\n\n")
+                for inp in inp_list:
+                    p = inp.get("path", "")
+                    t = inp.get("node_type", "")
+                    suffix = f" _{t}_" if t else ""
+                    f.write(f"- `{p}`{suffix}\n")
+                f.write("\n")
+
+            # --- Outputs ---
+            out_list = manifest.get("outputs", [])
+            if out_list:
+                f.write("## Outputs\n\n")
+                for out in out_list:
+                    p = out.get("path", "")
+                    t = out.get("node_type", "")
+                    r = out.get("role", "")
+                    suffix = f" _{t}{' · ' + r if r else ''}_" if t else (f" _{r}_" if r else "")
+                    f.write(f"- `{p}`{suffix}\n")
+                    # Per-output parameters (e.g. different rise/twist per download)
+                    out_params = out.get("parameters", {})
+                    if out_params:
+                        for k, v in out_params.items():
+                            f.write(f"  - {k}: `{v}`\n")
+                f.write("\n")
+
+            # --- Parameters ---
+            # params may be a dict (single run) or list of dicts (multiple downloads)
+            if params:
+                if isinstance(params, list):
+                    f.write("## Parameters (per downloaded volume)\n\n")
+                    for i, p_set in enumerate(params):
+                        f.write(f"**Volume {i+1}**\n\n")
+                        f.write("| Parameter | Value |\n|---|---|\n")
+                        for k, v in p_set.items():
+                            f.write(f"| {k} | {v} |\n")
+                        f.write("\n")
+                else:
+                    f.write("## Parameters\n\n")
+                    f.write("| Parameter | Value |\n|---|---|\n")
+                    for k, v in params.items():
+                        f.write(f"| {k} | {v} |\n")
+                    f.write("\n")
+
+            # --- Summary ---
+            if summary:
+                f.write("## Summary\n\n")
+                f.write("| Metric | Value |\n|---|---|\n")
+                for k, v in summary.items():
+                    if not isinstance(v, (list, dict)):
+                        f.write(f"| {k} | {v} |\n")
+                f.write("\n")
+
+            # --- Pipeline links ---
+            if inputs_edge:
+                f.write("## Input Jobs\n\n")
+                for jname in inputs_edge:
+                    parts = jname.rstrip("/").split("/")
+                    if len(parts) == 2:
+                        jtype, jshort = parts
+                        f.write(f"- [[{jshort}_{jtype}|{jtype}: {jshort}]]\n")
+                    else:
+                        f.write(f"- {jname}\n")
+                f.write("\n")
+
+            if outputs_edge:
+                f.write("## Jobs that use this\n\n")
+                for jname in outputs_edge:
+                    parts = jname.rstrip("/").split("/")
+                    if len(parts) == 2:
+                        jtype, jshort = parts
+                        f.write(f"- [[{jshort}_{jtype}|{jtype}: {jshort}]]\n")
+                    else:
+                        f.write(f"- {jname}\n")
+                f.write("\n")
+
+        registry[m_id] = cur_hash
+        save_r2o_registry(output_dir, registry)
+        logger.info(f"Wrote external tool note: {note_filename}")
+        return note_filename, True
+
+    except Exception as e:
+        logger.error(f"Error writing external tool note for {m_id}: {e}")
+        return note_filename, False
+
 
 def get_incomplete_jobs_file(output_dir):
     """Get path to the hidden file that tracks incomplete jobs"""
