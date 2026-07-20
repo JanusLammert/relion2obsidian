@@ -16,6 +16,8 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+__version__ = "1.0.0"
+
 import os
 import json
 import argparse
@@ -1877,8 +1879,13 @@ def remove_incomplete_job(output_dir, job_name):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Obsidian notes from RELION project jobs.")
-    parser.add_argument("-i", "--project_dir", required=True, help="Path to the RELION project directory.")
-    parser.add_argument("-o", "--output_dir", required=True, help="Path to the output directory for Obsidian notes.")
+    parser.add_argument("--version", action="version", version=f"rel2obsi_beta.py {__version__}")
+    parser.add_argument(
+        "--license", action="store_true",
+        help="Print license information (GNU GPL v3.0) and exit.",
+    )
+    parser.add_argument("-i", "--project_dir", required=False, help="Path to the RELION project directory.")
+    parser.add_argument("-o", "--output_dir", required=False, help="Path to the output directory for Obsidian notes.")
     parser.add_argument("--force", action="store_true", help="Force regeneration of existing notes.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging.")
     parser.add_argument(
@@ -1901,6 +1908,16 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.license:
+        print(__doc__.strip())
+        print(
+            "\nFull license text: see the LICENSE file distributed with this "
+            "program, or <https://www.gnu.org/licenses/gpl-3.0.txt>."
+        )
+        return
+    if not args.project_dir or not args.output_dir:
+        parser.error("the following arguments are required: -i/--project_dir, -o/--output_dir")
 
     # Attach file logging now that we're actually running as a script
     # (not just being imported by canvas_generator.py's standalone mode).

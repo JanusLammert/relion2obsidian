@@ -15,6 +15,9 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+
+__version__ = "1.0.0"
+
 """
 canvas_generator.py
 ====================
@@ -663,9 +666,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="Creates an Obsidian Canvas for a Relion Project"
     )
-    parser.add_argument("-i", "--project_dir",  required=True,
+    parser.add_argument("--version", action="version", version=f"canvas_generator.py {__version__}")
+    parser.add_argument(
+        "--license", action="store_true",
+        help="Print license information (GNU GPL v3.0) and exit.",
+    )
+    parser.add_argument("-i", "--project_dir",  required=False,
                         help="Path to the RELION Directory")
-    parser.add_argument("-o", "--output_dir",   required=True,
+    parser.add_argument("-o", "--output_dir",   required=False,
                         help="Path to the Obsidian notes directory")
     parser.add_argument("-v", "--verbose",       action="store_true",
                         help="Extensive logging")
@@ -687,6 +695,16 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    if args.license:
+        print(__doc__.strip())
+        print(
+            "\nFull license text: see the LICENSE file distributed with this "
+            "program, or <https://www.gnu.org/licenses/gpl-3.0.txt>."
+        )
+        return
+    if not args.project_dir or not args.output_dir:
+        parser.error("the following arguments are required: -i/--project_dir, -o/--output_dir")
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
