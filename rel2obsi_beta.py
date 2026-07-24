@@ -16,7 +16,7 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import os
 import json
@@ -342,8 +342,22 @@ def normalize(img):
         logger.error(f"Error normalizing image: {str(e)}")
         return img  # Return original image if normalization fails
 
-def add_text(gray_image_array, top_text="Top Text", bottom_text="Bottom Text"):
-    """Add text to an image"""
+# "Clean" scale-bar lengths (Angstrom) to choose from, so bars read as e.g. "100 A"
+# rather than an arbitrary pixel-derived number like "137 A".
+_SCALEBAR_CANDIDATES_A = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+
+def pick_scalebar_length_a(box_width_a):
+    """Pick a clean scale-bar length (Angstrom), targeting ~20% of the box width and
+    never exceeding ~35% of it (so the bar stays a reference, not the dominant feature)."""
+    target = box_width_a * 0.2
+    max_allowed = box_width_a * 0.35
+    candidates = [c for c in _SCALEBAR_CANDIDATES_A if c <= max_allowed]
+    if not candidates:
+        candidates = [_SCALEBAR_CANDIDATES_A[0]]
+    return min(candidates, key=lambda c: abs(c - target))
+
+def add_text(gray_image_array, top_text="Top Text", bottom_text="Bottom Text", pixel_size_a=None):
+    """Add text to an image, and (if pixel_size_a is given, in Angstrom/pixel) a scale bar."""
     try:
         gray_image_array = normalize(gray_image_array)
         gray_image_array = img_as_ubyte(gray_image_array)
@@ -371,8 +385,24 @@ def add_text(gray_image_array, top_text="Top Text", bottom_text="Bottom Text"):
         bottom_text_position = ((image_width - text_width) // 2, image_height - text_height - 10)
         draw.text(bottom_text_position, bottom_text, fill=text_color, font=font)
 
+        # Scale bar, bottom-left corner - clear of the centered top/bottom labels above.
+        if pixel_size_a:
+            bar_a = pick_scalebar_length_a(image_width * pixel_size_a)
+            bar_px = max(1, round(bar_a / pixel_size_a))
+            margin = 6
+            bar_thickness = 2
+            label = f"{bar_a:g} Å"
+            label_bbox = draw.textbbox((0, 0), label, font=font)
+            label_h = label_bbox[3] - label_bbox[1]
+
+            bar_y = image_height - margin - bar_thickness
+            bar_x0 = margin
+            bar_x1 = min(image_width - margin, bar_x0 + bar_px)
+            draw.line([(bar_x0, bar_y), (bar_x1, bar_y)], fill=(255, 255, 255), width=bar_thickness)
+            draw.text((bar_x0, bar_y - label_h - 2), label, fill=(255, 255, 255), font=font)
+
         return np.array(image)
-        
+
     except Exception as e:
         logger.error(f"Error adding text to image: {str(e)}")
         return gray_image_array  # Return original image if text addition fails
@@ -432,6 +462,21 @@ def generate_class2d_image(job_dir, out_dir, iteration=-1):
         classes_df = model_data["model_classes"]
         total_particles = particles_data["particles"].shape[0]
 
+        # Pixel size (Angstrom/px) for the scale bar - same for every class in this job,
+        # so read it once from model_general rather than per class.
+        pixel_size_a = None
+        model_general = model_data.get("model_general") if isinstance(model_data, dict) else None
+        if model_general is not None:
+            for key in ("rlnPixelSize", "rlnImagePixelSize"):
+                try:
+                    if key in model_general:
+                        pixel_size_a = float(model_general[key])
+                        break
+                except Exception:
+                    pass
+        if pixel_size_a is None:
+            logger.warning(f"Could not find rlnPixelSize in model.star for {job_dir} - scale bar will be omitted")
+
         # Select required columns and convert to numpy arrays
         class_distribution = classes_df["rlnClassDistribution"].to_numpy()
         estimated_resolution = classes_df["rlnEstimatedResolution"].to_numpy()
@@ -452,7 +497,7 @@ def generate_class2d_image(job_dir, out_dir, iteration=-1):
         for img, num, res in zip(
             mrc_stk_sorted, number_of_particles[sorted_indices], estimated_resolution[sorted_indices]
         ):
-            labeled_images.append(add_text(img, str(num), f"{res:.2f} A"))
+            labeled_images.append(add_text(img, str(num), f"{res:.2f} A", pixel_size_a=pixel_size_a))
 
         # Stack labeled images and create a montage
         montage_img = make_montage(np.stack(labeled_images))
@@ -1164,7 +1209,7 @@ def batch_generate_class2d_images(class2d_jobs, output_dir, force=False, max_wor
     
     return class2d_montages
 
-def create_obsidian_notes(jobs, output_dir, force=False, project_dir=None, canvas_name=None, canvas_depth=2):
+def create_obsidian_notes(jobs, output_dir, force=False, project_dir=None, canvas_name=None, canvas_depth=2, dag_direction="horizontal"):
     """Create or update Obsidian notes for all jobs"""
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -1542,6 +1587,7 @@ def create_obsidian_notes(jobs, output_dir, force=False, project_dir=None, canva
             project_dir,
             canvas_name=canvas_name,
             canvas_depth=canvas_depth,
+            dag_direction=dag_direction,
         )
 
         # Update incomplete jobs tracking
@@ -1906,6 +1952,16 @@ def main():
             "Use 1 for  vault/MyCanvas.canvas  +  vault/Project/notes/."
         ),
     )
+    parser.add_argument(
+        "--dag-direction",
+        choices=["horizontal", "vertical"],
+        default="horizontal",
+        help=(
+            "Layout direction for the job-pipeline DAG in the generated Canvas. "
+            "Default: horizontal (left-to-right, as before). 'vertical' lays the "
+            "pipeline out top-to-bottom instead."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1946,6 +2002,7 @@ def main():
             args.project_dir,
             canvas_name=args.canvas_name,
             canvas_depth=args.canvas_depth,
+            dag_direction=args.dag_direction,
         )
         logger.info(f"Obsidian notes created in {args.output_dir}")
         logger.info("Open this directory as an Obsidian vault to view the job structure.")

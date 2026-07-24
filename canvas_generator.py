@@ -16,7 +16,7 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 """
 canvas_generator.py
@@ -323,15 +323,25 @@ def topo_sort(all_job_names, inputs, outputs=None):
     return order, depth
 
 
-def assign_positions(jobs_by_name: dict, inputs: dict, outputs: dict = None):
+def assign_positions(jobs_by_name: dict, inputs: dict, outputs: dict = None,
+                      vertical: bool = False):
     """
     Berechnet x,y-Koordinaten für jeden Job-Knoten als zentrierter Baum.
 
     Algorithmus (Reingold-Tilford-ähnlich, Bottom-Up):
-      1. Topologische Tiefe → x-Spalte (links = früh, rechts = spät)
-      2. Leaf-Knoten werden von oben nach unten gestapelt (nach Job-Nummer sortiert)
-      3. Jeder innere Knoten wird vertikal zentriert über seine direkten Kinder gesetzt
+      1. Topologische Tiefe → Spalte (horizontal: links=früh/rechts=spät;
+         vertical: oben=früh/unten=spät)
+      2. Leaf-Knoten werden der Spalte entlang gestapelt (nach Job-Nummer sortiert)
+      3. Jeder innere Knoten wird zentriert über seine direkten Kinder gesetzt
       4. Ein globaler Offset-Pass verhindert Überlappungen zwischen unabhängigen Teilbäumen
+
+    `vertical=False` (Default) legt die Tiefe auf die x-Achse (links->rechts, wie bisher);
+    `vertical=True` legt sie stattdessen auf die y-Achse (oben->unten). Der gesamte
+    Stapel-/Zentrierungs-Algorithmus arbeitet unverändert mit einer "Tiefen-Koordinate"
+    (bisher `x`) und einer "Geschwister-Koordinate" (bisher `y`) - nur die finale
+    Zuordnung auf die tatsächlichen (x, y)-Achsen wird pro `positions[name] = (...)`
+    anhand von `vertical` vertauscht, damit keine der eigentlichen Layout-Logik
+    (Stapeln, Zentrieren, Überlappungskorrektur) angefasst werden muss.
 
     Gibt dict { job_name: (x, y) } zurück.
     """
@@ -432,7 +442,16 @@ def assign_positions(jobs_by_name: dict, inputs: dict, outputs: dict = None):
             positions[name] = (x, y)
             cursor = y + NODE_H + V_GAP
 
-    # Ganzzahlige Koordinaten für sauberes JSON
+    # Ganzzahlige Koordinaten für sauberes JSON. Intern ist x immer die
+    # Tiefen-Koordinate und y immer die Geschwister-Koordinate (das gesamte
+    # Stapel-/Zentrierungs-Layout oben arbeitet ausschließlich mit dieser
+    # Konvention, u.a. weil spätere Schritte `positions[n][1]` als
+    # Geschwister-Koordinate zurücklesen) - deshalb wird für `vertical=True`
+    # erst hier am Ende vertauscht (Tiefe -> y, Geschwister -> x), statt an
+    # jeder einzelnen Zuweisung weiter oben, was die interne Konsistenz
+    # zwischen den drei Layout-Schritten brechen würde.
+    if vertical:
+        return {name: (int(y), int(x)) for name, (x, y) in positions.items()}
     return {name: (int(x), int(y)) for name, (x, y) in positions.items()}
 
 
@@ -446,6 +465,7 @@ def build_canvas_from_jobs(
     project_dir: str = None,
     canvas_name: str = None,
     canvas_depth: int = 2,
+    dag_direction: str = "horizontal",
 ):
     """
     Erzeugt eine Obsidian Canvas-Datei.
@@ -461,7 +481,16 @@ def build_canvas_from_jobs(
                    Standard 2: vault/canvas.canvas + vault/Projekt/Subprojekt/notes
                    Das Canvas wird in output_dir/../../ gespeichert (canvas_depth=2).
                    Die file-Pfade in den Nodes werden entsprechend angepasst.
+    dag_direction : "horizontal" (Standard, links->rechts, wie bisher) oder "vertical"
+                   (oben->unten). Wirkt sich auf assign_positions() (welche Achse die
+                   Pipeline-Tiefe kodiert) und auf die Kanten-Anschlussseiten aus
+                   (right/left bei horizontal, bottom/top bei vertical).
     """
+    if dag_direction not in ("horizontal", "vertical"):
+        logger.warning(
+            "Unbekannter dag_direction=%r, verwende 'horizontal'.", dag_direction
+        )
+        dag_direction = "horizontal"
     try:
         # --- Projekt-Verzeichnis ermitteln ---
         if project_dir is None:
@@ -542,7 +571,8 @@ def build_canvas_from_jobs(
 
         # --- Positionen berechnen ---
         logger.info("Berechne Layout...")
-        positions = assign_positions(jobs_by_name, inputs, outputs)
+        positions = assign_positions(jobs_by_name, inputs, outputs,
+                                      vertical=(dag_direction == "vertical"))
 
         # --- Canvas-Datenstruktur aufbauen ---
         canvas_nodes = []
@@ -628,9 +658,9 @@ def build_canvas_from_jobs(
                 canvas_edges.append({
                     "id":       f"edge_{edge_id_counter}",
                     "fromNode": src_id,
-                    "fromSide": "right",
+                    "fromSide": "bottom" if dag_direction == "vertical" else "right",
                     "toNode":   tgt_id,
-                    "toSide":   "left",
+                    "toSide":   "top" if dag_direction == "vertical" else "left",
                 })
                 edge_id_counter += 1
 
